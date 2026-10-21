@@ -14,8 +14,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// RegisterTools registers all 14 MCP tools on the server.
-// All tools are read-only. No write/create/delete tools are implemented.
+// RegisterTools registers all MCP tools on the server: read tools, write
+// tools (create/update/delete/clone/instance/selection), and get_result_chunk.
 func RegisterTools(s *server.MCPServer, node *Node) {
 	// ── Document & Selection ─────────────────────────────────────────────
 
@@ -37,9 +37,12 @@ func RegisterTools(s *server.MCPServer, node *Node) {
 			mcp.Required(),
 			mcp.Description("Node ID in colon format e.g. '4029:12345'"),
 		),
+		mcp.WithNumber("depth",
+			mcp.Description("Optional: how many levels of children to include. Omit for the full subtree."),
+		),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		nodeID, _ := req.Params.Arguments["nodeId"].(string)
-		resp, err := node.Send(ctx, "get_node", []string{nodeID}, nil)
+		resp, err := node.Send(ctx, "get_node", []string{nodeID}, depthParams(req))
 		return renderResponse(resp, err)
 	})
 
@@ -49,10 +52,13 @@ func RegisterTools(s *server.MCPServer, node *Node) {
 			mcp.Required(),
 			mcp.Description("List of node IDs in colon format e.g. ['4029:12345', '4029:67890']"),
 		),
+		mcp.WithNumber("depth",
+			mcp.Description("Optional: how many levels of children to include per node. Omit for the full subtree."),
+		),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		raw, _ := req.Params.Arguments["nodeIds"].([]interface{})
 		nodeIDs := toStringSlice(raw)
-		resp, err := node.Send(ctx, "get_nodes_info", nodeIDs, nil)
+		resp, err := node.Send(ctx, "get_nodes_info", nodeIDs, depthParams(req))
 		return renderResponse(resp, err)
 	})
 
@@ -172,6 +178,107 @@ func RegisterTools(s *server.MCPServer, node *Node) {
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return executeSaveScreenshots(ctx, node, req)
 	})
+
+	// ── Write ────────────────────────────────────────────────────────────
+
+	s.AddTool(mcp.NewTool("create_nodes",
+		mcp.WithDescription(`Create one or more nodes (optionally nested) in Figma. Each node spec: {type, ...props, children?: [spec]}.
+Types: FRAME, RECTANGLE, ELLIPSE, LINE, TEXT, COMPONENT.
+`+nodePropsDoc),
+		mcp.WithString("parentId",
+			mcp.Description("Optional parent node ID (colon format). Defaults to the current page."),
+		),
+		mcp.WithArray("nodes",
+			mcp.Required(),
+			mcp.Description("List of node specs to create, e.g. [{\"type\":\"FRAME\",\"name\":\"Card\",\"width\":320,\"height\":200,\"fills\":\"#FFFFFF\",\"layoutMode\":\"VERTICAL\",\"padding\":16,\"children\":[{\"type\":\"TEXT\",\"characters\":\"Hello\",\"fontSize\":24}]}]"),
+			mcp.Items(map[string]interface{}{"type": "object"}),
+		),
+	), passParams(node, "create_nodes"))
+
+	s.AddTool(mcp.NewTool("update_nodes",
+		mcp.WithDescription(`Update properties of existing nodes. Each update: {nodeId, ...props}. Add parentId (and optional index) to move a node into another parent.
+`+nodePropsDoc),
+		mcp.WithArray("updates",
+			mcp.Required(),
+			mcp.Description("List of updates, e.g. [{\"nodeId\":\"1:2\",\"characters\":\"New title\",\"fills\":\"#111111\"}]"),
+			mcp.Items(map[string]interface{}{"type": "object"}),
+		),
+	), passParams(node, "update_nodes"))
+
+	s.AddTool(mcp.NewTool("delete_nodes",
+		mcp.WithDescription("Delete nodes by ID. Can be undone in Figma with Cmd+Z."),
+		mcp.WithArray("nodeIds",
+			mcp.Required(),
+			mcp.Description("Node IDs to delete, colon format"),
+			mcp.Items(map[string]interface{}{"type": "string"}),
+		),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		raw, _ := req.Params.Arguments["nodeIds"].([]interface{})
+		resp, err := node.Send(ctx, "delete_nodes", toStringSlice(raw), nil)
+		return renderResponse(resp, err)
+	})
+
+	s.AddTool(mcp.NewTool("clone_node",
+		mcp.WithDescription("Duplicate a node. The copy stays in the same parent unless parentId is given."),
+		mcp.WithString("nodeId", mcp.Required(), mcp.Description("Node ID to clone, colon format")),
+		mcp.WithString("parentId", mcp.Description("Optional new parent node ID")),
+		mcp.WithNumber("index", mcp.Description("Optional child index within the parent")),
+		mcp.WithNumber("x", mcp.Description("Optional x position")),
+		mcp.WithNumber("y", mcp.Description("Optional y position")),
+		mcp.WithString("name", mcp.Description("Optional name for the copy")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		nodeID, _ := req.Params.Arguments["nodeId"].(string)
+		params := map[string]interface{}{}
+		for k, v := range req.Params.Arguments {
+			if k != "nodeId" {
+				params[k] = v
+			}
+		}
+		resp, err := node.Send(ctx, "clone_node", []string{nodeID}, params)
+		return renderResponse(resp, err)
+	})
+
+	s.AddTool(mcp.NewTool("create_instance",
+		mcp.WithDescription("Create an instance of a component. Use componentId for local components (see get_local_components) or componentKey for published library components."),
+		mcp.WithString("componentId", mcp.Description("Local component node ID, colon format")),
+		mcp.WithString("componentKey", mcp.Description("Published component key")),
+		mcp.WithString("parentId", mcp.Description("Optional parent node ID. Defaults to the current page.")),
+		mcp.WithNumber("index", mcp.Description("Optional child index within the parent")),
+		mcp.WithNumber("x", mcp.Description("Optional x position")),
+		mcp.WithNumber("y", mcp.Description("Optional y position")),
+		mcp.WithString("name", mcp.Description("Optional instance name")),
+	), passParams(node, "create_instance"))
+
+	s.AddTool(mcp.NewTool("set_selection",
+		mcp.WithDescription("Select nodes on the current page and scroll the viewport to them."),
+		mcp.WithArray("nodeIds",
+			mcp.Required(),
+			mcp.Description("Node IDs to select, colon format"),
+			mcp.Items(map[string]interface{}{"type": "string"}),
+		),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		raw, _ := req.Params.Arguments["nodeIds"].([]interface{})
+		resp, err := node.Send(ctx, "set_selection", toStringSlice(raw), nil)
+		return renderResponse(resp, err)
+	})
+
+	// ── Large results ────────────────────────────────────────────────────
+
+	s.AddTool(mcp.NewTool("get_result_chunk",
+		mcp.WithDescription("Fetch the next chunk of a large tool result. When a result is too big for one response it is split losslessly along the node tree; the first response includes resultId, totalChunks and howToRead. Each chunk holds complete nodes as items {path, parentId, value}; stubs marked \"$chunked\": true (with id/name/type) are filled by later items at the same path. Fetch every chunk to read the full design."),
+		mcp.WithString("resultId",
+			mcp.Required(),
+			mcp.Description("resultId from the chunked response"),
+		),
+		mcp.WithNumber("chunk",
+			mcp.Required(),
+			mcp.Description("Zero-based chunk index to fetch"),
+		),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id, _ := req.Params.Arguments["resultId"].(string)
+		idx, _ := req.Params.Arguments["chunk"].(float64)
+		return chunkResult(id, int(idx))
+	})
 }
 
 // RegisterPrompts registers MCP prompts on the server.
@@ -224,7 +331,40 @@ func renderResponse(resp BridgeResponse, err error) (*mcp.CallToolResult, error)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("marshal response: %v", err)), nil
 	}
+	if len(text) > maxResultBytes() {
+		return storeChunked(resp.Data)
+	}
 	return mcp.NewToolResultText(string(text)), nil
+}
+
+// nodePropsDoc describes the properties accepted by create_nodes and update_nodes.
+const nodePropsDoc = `Supported props (all optional):
+- name, x, y, width, height, rotation, opacity, visible, locked
+- fills, strokes: "#RRGGBB" / "#RRGGBBAA", {color, opacity}, {image: url or imageBase64: base64 PNG/JPG, scaleMode (FILL|FIT|CROP|TILE)}, {gradient: [{color, position}], angle (90 = top to bottom)}, or an array of those; [] clears. Image URLs must be on images.unsplash.com or images.pexels.com
+- strokeWeight, strokeAlign (INSIDE|OUTSIDE|CENTER), dashPattern ([dash, gap] e.g. [6, 4]), cornerRadius, topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius, clipsContent
+- arcData (ELLIPSE): {startingAngle, endingAngle in degrees, 0 = 3 o'clock, clockwise; innerRadius 0..1} for rings/arcs
+- effects: [{type: DROP_SHADOW|INNER_SHADOW, color "#RRGGBBAA", x, y, radius, spread}] or [{type: LAYER_BLUR|BACKGROUND_BLUR, radius}]; [] clears
+- reactions (prototype): [{to: nodeId, navigation: NAVIGATE|OVERLAY|SWAP|SCROLL_TO|BACK|CLOSE, transition: SMART_ANIMATE|DISSOLVE|MOVE_IN|SLIDE_IN|INSTANT, direction, duration ms, trigger: ON_CLICK|ON_HOVER|AFTER_TIMEOUT, timeout ms}]; [] clears
+- flowStartName (top-level frame): marks it as a prototype flow start with that name; "" removes it
+- Auto layout: layoutMode (NONE|HORIZONTAL|VERTICAL), layoutWrap, itemSpacing, counterAxisSpacing, padding (number or {top,right,bottom,left}), primaryAxisAlignItems (MIN|CENTER|MAX|SPACE_BETWEEN), counterAxisAlignItems (MIN|CENTER|MAX|BASELINE), primaryAxisSizingMode / counterAxisSizingMode (FIXED|AUTO)
+- Child of auto layout: layoutSizingHorizontal / layoutSizingVertical (FIXED|HUG|FILL), layoutPositioning (AUTO|ABSOLUTE)
+- TEXT: fillRanges ([{start, end, fills}] colours part of the text), characters, fontSize, fontFamily, fontStyle (e.g. "Bold"), textDecoration (NONE|UNDERLINE|STRIKETHROUGH), textAlignHorizontal, textAlignVertical, textAutoResize, lineHeight (px or {unit,value}), letterSpacing
+All changes can be undone in Figma with Cmd+Z.`
+
+// passParams creates a handler that forwards all tool arguments as params.
+func passParams(node *Node, command string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		resp, err := node.Send(ctx, command, nil, req.Params.Arguments)
+		return renderResponse(resp, err)
+	}
+}
+
+// depthParams extracts the optional depth argument for tree-returning tools.
+func depthParams(req mcp.CallToolRequest) map[string]interface{} {
+	if d, ok := req.Params.Arguments["depth"].(float64); ok {
+		return map[string]interface{}{"depth": d}
+	}
+	return nil
 }
 
 // toStringSlice converts []interface{} to []string.
