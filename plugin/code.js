@@ -93,6 +93,12 @@ const serializeNode = (node) => {
     bounds: getBounds(node),
     styles: serializeStyles(node),
   };
+  if ("reactions" in node && node.reactions.length) {
+    base.reactions = node.reactions.map((r) => {
+      const a = (r.actions || [r.action])[0] || {};
+      return { trigger: r.trigger && r.trigger.type, navigation: a.navigation || a.type, to: a.destinationId || null };
+    });
+  }
   if (node.type === "TEXT") return serializeText(node, base);
   if ("children" in node) {
     return Object.assign({}, base, { children: node.children.map((child) => serializeNode(child)) });
@@ -308,6 +314,11 @@ const applyProps = async (node, props) => {
   if (has("fillRanges")) {
     for (const r of props.fillRanges) node.setRangeFills(r.start, r.end, await toPaints(r.fills));
   }
+  // fillsFrom copies another node's fills (e.g. to reuse an image fill without re-uploading it).
+  if (has("fillsFrom")) {
+    const src = await figma.getNodeByIdAsync(props.fillsFrom);
+    if (src && "fills" in src) node.fills = src.fills;
+  }
   if (has("reactions")) await node.setReactionsAsync(props.reactions.map(toReaction));
   // Marks a top-level frame as a prototype flow start on its page.
   if (has("flowStartName")) {
@@ -339,18 +350,48 @@ const createByType = {
   LINE: () => figma.createLine(),
   TEXT: () => figma.createText(),
   COMPONENT: () => figma.createComponent(),
+  SVG: (spec) => figma.createNodeFromSvg(spec.svg),
 };
 
 // createTree creates a node (and nested children) under parent.
 const createTree = async (spec, parent) => {
+  // FROM_NODE converts an existing node (spec.nodeId) into a component in place, then moves it under parent.
+  if (spec.type === "FROM_NODE") {
+    const src = await figma.getNodeByIdAsync(spec.nodeId);
+    if (!src) throw new Error(`Node not found: ${spec.nodeId}`);
+    const comp = figma.createComponentFromNode(src);
+    insertInto(parent, comp, spec.index);
+    const props = Object.assign({}, spec);
+    delete props.type; delete props.nodeId; delete props.index; delete props.children;
+    await applyProps(comp, props);
+    return comp;
+  }
+  // COMPONENT_SET builds each COMPONENT child, then combines them as variants (child names like "Area=Company").
+  if (spec.type === "COMPONENT_SET") {
+    const comps = [];
+    for (const child of spec.children || []) comps.push(await createTree(child, parent));
+    const set = figma.combineAsVariants(comps, parent);
+    const props = Object.assign({}, spec);
+    delete props.type; delete props.children; delete props.index;
+    await applyProps(set, props);
+    return set;
+  }
+  // PAGE creates a new page in the document (parent is ignored); children are built inside it.
+  if (spec.type === "PAGE") {
+    const page = figma.createPage();
+    if (spec.name) page.name = spec.name;
+    for (const child of spec.children || []) await createTree(child, page);
+    return page;
+  }
   const create = createByType[spec.type];
   if (!create) throw new Error(`Unsupported node type: ${spec.type}. Use one of ${Object.keys(createByType).join(", ")}`);
-  const node = create();
+  const node = create(spec);
   try {
     if (node.type === "TEXT") await loadFont(node.fontName);
     insertInto(parent, node, spec.index);
     const props = Object.assign({}, spec);
     delete props.type;
+    delete props.svg;
     delete props.children;
     delete props.index;
     await applyProps(node, props);

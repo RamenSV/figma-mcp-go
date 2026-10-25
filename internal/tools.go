@@ -183,7 +183,7 @@ func RegisterTools(s *server.MCPServer, node *Node) {
 
 	s.AddTool(mcp.NewTool("create_nodes",
 		mcp.WithDescription(`Create one or more nodes (optionally nested) in Figma. Each node spec: {type, ...props, children?: [spec]}.
-Types: FRAME, RECTANGLE, ELLIPSE, LINE, TEXT, COMPONENT.
+Types: FRAME, RECTANGLE, ELLIPSE, LINE, TEXT, COMPONENT, SVG (pass the markup in svg), PAGE (creates a new page; parentId ignored), FROM_NODE (converts node nodeId into a component under parentId), COMPONENT_SET (children are COMPONENTs named \"Prop=Value\", combined as variants).
 `+nodePropsDoc),
 		mcp.WithString("parentId",
 			mcp.Description("Optional parent node ID (colon format). Defaults to the current page."),
@@ -344,6 +344,7 @@ const nodePropsDoc = `Supported props (all optional):
 - strokeWeight, strokeAlign (INSIDE|OUTSIDE|CENTER), dashPattern ([dash, gap] e.g. [6, 4]), cornerRadius, topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius, clipsContent
 - arcData (ELLIPSE): {startingAngle, endingAngle in degrees, 0 = 3 o'clock, clockwise; innerRadius 0..1} for rings/arcs
 - effects: [{type: DROP_SHADOW|INNER_SHADOW, color "#RRGGBBAA", x, y, radius, spread}] or [{type: LAYER_BLUR|BACKGROUND_BLUR, radius}]; [] clears
+- fillsFrom: node ID whose fills are copied (reuse image fills)
 - reactions (prototype): [{to: nodeId, navigation: NAVIGATE|OVERLAY|SWAP|SCROLL_TO|BACK|CLOSE, transition: SMART_ANIMATE|DISSOLVE|MOVE_IN|SLIDE_IN|INSTANT, direction, duration ms, trigger: ON_CLICK|ON_HOVER|AFTER_TIMEOUT, timeout ms}]; [] clears
 - flowStartName (top-level frame): marks it as a prototype flow start with that name; "" removes it
 - Auto layout: layoutMode (NONE|HORIZONTAL|VERTICAL), layoutWrap, itemSpacing, counterAxisSpacing, padding (number or {top,right,bottom,left}), primaryAxisAlignItems (MIN|CENTER|MAX|SPACE_BETWEEN), counterAxisAlignItems (MIN|CENTER|MAX|BASELINE), primaryAxisSizingMode / counterAxisSizingMode (FIXED|AUTO)
