@@ -193,7 +193,7 @@ Types: FRAME, RECTANGLE, ELLIPSE, LINE, TEXT, COMPONENT, SVG (pass the markup in
 			mcp.Description("List of node specs to create, e.g. [{\"type\":\"FRAME\",\"name\":\"Card\",\"width\":320,\"height\":200,\"fills\":\"#FFFFFF\",\"layoutMode\":\"VERTICAL\",\"padding\":16,\"children\":[{\"type\":\"TEXT\",\"characters\":\"Hello\",\"fontSize\":24}]}]"),
 			mcp.Items(map[string]interface{}{"type": "object"}),
 		),
-	), passParams(node, "create_nodes"))
+	), passParamsWithImages(node, "create_nodes"))
 
 	s.AddTool(mcp.NewTool("update_nodes",
 		mcp.WithDescription(`Update properties of existing nodes. Each update: {nodeId, ...props}. Add parentId (and optional index) to move a node into another parent.
@@ -203,7 +203,7 @@ Types: FRAME, RECTANGLE, ELLIPSE, LINE, TEXT, COMPONENT, SVG (pass the markup in
 			mcp.Description("List of updates, e.g. [{\"nodeId\":\"1:2\",\"characters\":\"New title\",\"fills\":\"#111111\"}]"),
 			mcp.Items(map[string]interface{}{"type": "object"}),
 		),
-	), passParams(node, "update_nodes"))
+	), passParamsWithImages(node, "update_nodes"))
 
 	s.AddTool(mcp.NewTool("delete_nodes",
 		mcp.WithDescription("Delete nodes by ID. Can be undone in Figma with Cmd+Z."),
@@ -340,7 +340,7 @@ func renderResponse(resp BridgeResponse, err error) (*mcp.CallToolResult, error)
 // nodePropsDoc describes the properties accepted by create_nodes and update_nodes.
 const nodePropsDoc = `Supported props (all optional):
 - name, x, y, width, height, rotation, opacity, visible, locked
-- fills, strokes: "#RRGGBB" / "#RRGGBBAA", {color, opacity}, {image: url or imageBase64: base64 PNG/JPG, scaleMode (FILL|FIT|CROP|TILE)}, {gradient: [{color, position}], angle (90 = top to bottom)}, or an array of those; [] clears. Image URLs must be on images.unsplash.com or images.pexels.com
+- fills, strokes: "#RRGGBB" / "#RRGGBBAA", {color, opacity}, {image: url, imageBase64: base64 PNG/JPG, or imagePath: absolute or ~/ path to a local .png/.jpg/.gif, scaleMode (FILL|FIT|CROP|TILE)}, {gradient: [{color, position}], angle (90 = top to bottom)}, or an array of those; [] clears. Image URLs must be on images.unsplash.com or images.pexels.com; prefer imagePath for local files
 - strokeWeight, strokeAlign (INSIDE|OUTSIDE|CENTER), dashPattern ([dash, gap] e.g. [6, 4]), cornerRadius, topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius, clipsContent
 - arcData (ELLIPSE): {startingAngle, endingAngle in degrees, 0 = 3 o'clock, clockwise; innerRadius 0..1} for rings/arcs
 - effects: [{type: DROP_SHADOW|INNER_SHADOW, color "#RRGGBBAA", x, y, radius, spread}] or [{type: LAYER_BLUR|BACKGROUND_BLUR, radius}]; [] clears
@@ -355,6 +355,18 @@ All changes can be undone in Figma with Cmd+Z.`
 // passParams creates a handler that forwards all tool arguments as params.
 func passParams(node *Node, command string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		resp, err := node.Send(ctx, command, nil, req.Params.Arguments)
+		return renderResponse(resp, err)
+	}
+}
+
+// passParamsWithImages is passParams for write tools whose paints may use
+// imagePath: local files are read and inlined as imageBase64 before sending.
+func passParamsWithImages(node *Node, command string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := inlineImagePaths(req.Params.Arguments); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		resp, err := node.Send(ctx, command, nil, req.Params.Arguments)
 		return renderResponse(resp, err)
 	}
