@@ -122,6 +122,37 @@ func ValidateRPC(tool string, nodeIDs []string, params map[string]interface{}) s
 			return msg
 		}
 
+	case "animate_nodes":
+		tracks, _ := params["tracks"].([]interface{})
+		styles, _ := params["styles"].([]interface{})
+		if len(tracks) == 0 && len(styles) == 0 {
+			return "tracks or styles must be a non-empty array"
+		}
+		for _, list := range []struct {
+			name  string
+			items []interface{}
+		}{{"tracks", tracks}, {"styles", styles}} {
+			for i, item := range list.items {
+				m, ok := item.(map[string]interface{})
+				if !ok {
+					return fmt.Sprintf("%s[%d] must be an object", list.name, i)
+				}
+				if id, _ := m["nodeId"].(string); !ValidNodeID(id) {
+					return fmt.Sprintf("%s[%d].nodeId must use colon format e.g. 4029:12345", list.name, i)
+				}
+			}
+		}
+		if d, ok := params["duration"].(float64); ok && d <= 0 {
+			return "duration must be greater than zero"
+		}
+
+	case "get_animations":
+		for _, id := range nodeIDs {
+			if !ValidNodeID(id) {
+				return fmt.Sprintf("invalid nodeId: %s — must use colon format e.g. 4029:12345", id)
+			}
+		}
+
 	case "create_instance":
 		id, _ := params["componentId"].(string)
 		key, _ := params["componentKey"].(string)

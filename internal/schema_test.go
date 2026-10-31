@@ -14,3 +14,23 @@ func TestValidNodeID(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAnimateNodes(t *testing.T) {
+	track := map[string]interface{}{"nodeId": "1:2", "property": "OPACITY"}
+	cases := []struct {
+		name   string
+		params map[string]interface{}
+		ok     bool
+	}{
+		{"track", map[string]interface{}{"tracks": []interface{}{track}}, true},
+		{"style", map[string]interface{}{"styles": []interface{}{map[string]interface{}{"nodeId": "1:2", "style": "Fade in"}}}, true},
+		{"empty", map[string]interface{}{}, false},
+		{"bad id", map[string]interface{}{"tracks": []interface{}{map[string]interface{}{"nodeId": "1-2"}}}, false},
+		{"zero duration", map[string]interface{}{"tracks": []interface{}{track}, "duration": 0.0}, false},
+	}
+	for _, c := range cases {
+		if got := ValidateRPC("animate_nodes", nil, c.params) == ""; got != c.ok {
+			t.Errorf("%s: valid = %v, want %v", c.name, got, c.ok)
+		}
+	}
+}

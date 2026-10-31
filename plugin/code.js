@@ -413,6 +413,80 @@ const requireNode = async (nodeId) => {
 
 const summarize = (node) => ({ id: node.id, name: node.name, type: node.type, bounds: getBounds(node) });
 
+// Motion (beta API): keyframe tracks and animation styles on a node's timeline
+
+const requireMotion = () => {
+  if (!figma.motion) throw new Error("Figma Motion API is not available here (needs a Figma version with Motion, Design mode)");
+};
+
+// motionField maps a track's property to a KeyframeField: "OPACITY", "fills[0]", "effects[1].RADIUS", or a raw field object.
+const motionField = (track) => {
+  if (track.field) return track.field;
+  const m = /^(fills|strokes|effects)\[(\d+)\](?:\.(\w+))?$/.exec(track.property || "");
+  if (m) {
+    const field = { type: "INDEXED_ITEM", collection: m[1], index: Number(m[2]) };
+    if (m[3]) field.field = m[3];
+    return field;
+  }
+  if (!track.property) throw new Error("each track needs property (e.g. OPACITY, TRANSLATION_X) or field");
+  return { type: "PROPERTY", name: track.property };
+};
+
+// motionValue turns shorthand values into a KeyframeValue: number, boolean, "#RRGGBB[AA]", {x,y}, {r,g,b,a}, or a raw {type, value}.
+const motionValue = (v) => {
+  if (typeof v === "number") return { type: "FLOAT", value: v };
+  if (typeof v === "boolean") return { type: "BOOL", value: v };
+  if (typeof v === "string") {
+    if (v.startsWith("#")) {
+      const { color, opacity } = parseColor(v);
+      return { type: "COLOR", value: Object.assign({}, color, { a: opacity }) };
+    }
+    return { type: "TEXT_DATA", value: v };
+  }
+  if (v && typeof v === "object") {
+    if ("type" in v) return v;
+    if ("r" in v) return { type: "COLOR", value: { r: v.r, g: v.g, b: v.b, a: "a" in v ? v.a : 1 } };
+    if ("x" in v && "y" in v) return { type: "VECTOR", value: { x: v.x, y: v.y } };
+  }
+  throw new Error(`Unsupported keyframe value: ${JSON.stringify(v)}`);
+};
+
+// motionEasing accepts a preset name ("EASE_OUT", "GENTLE"...), a cubic bezier [x1,y1,x2,y2],
+// a spring {bounce} or {mass, stiffness, damping}, or a raw MotionEasing object.
+const motionEasing = (e) => {
+  if (e === undefined || e === null) return undefined;
+  if (typeof e === "string") return { type: e };
+  if (Array.isArray(e)) {
+    return { type: "CUSTOM_CUBIC_BEZIER", easingFunctionCubicBezier: { x1: e[0], y1: e[1], x2: e[2], y2: e[3] } };
+  }
+  if ("stiffness" in e) {
+    const bounce = figma.motion.physicalSpringToNormalized({ mass: e.mass || 1, stiffness: e.stiffness, damping: e.damping });
+    return { type: "CUSTOM_SPRING", easingFunctionSpring: { bounce } };
+  }
+  if ("bounce" in e && !("type" in e)) return { type: "CUSTOM_SPRING", easingFunctionSpring: { bounce: e.bounce } };
+  return e;
+};
+
+const findAnimationStyle = (spec) => {
+  if (spec.styleId) return spec.styleId;
+  const wanted = String(spec.style || "").toLowerCase();
+  const style = figma.motion.figmaAnimationStyles().find((s) => s.name.toLowerCase() === wanted);
+  if (!style) throw new Error(`Animation style not found: ${spec.style} (see get_animations for availableStyles)`);
+  return style.styleId;
+};
+
+// plain drops non-JSON values (Motion objects can carry symbols/functions).
+const plain = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+
+const serializeMotion = (node) => ({
+  id: node.id,
+  name: node.name,
+  timelines: plain(node.timelines),
+  animationStyles: plain(node.animationStyles),
+  manualKeyframeTracks: plain(node.manualKeyframeTracks),
+  animations: plain(node.animations),
+});
+
 // Plugin core
 
 const sendStatus = () => {
@@ -760,6 +834,76 @@ const handleRequest = async (request) => {
         await applyProps(instance, { x: params.x, y: params.y, name: params.name });
         figma.commitUndo();
         return { type: request.type, requestId: request.requestId, data: summarize(instance) };
+      }
+
+      case "animate_nodes": {
+        requireMotion();
+        const params = request.params;
+        const touched = new Map(); // nodeId -> { node, end } so timelines can be grown to fit
+        const touch = (node, end) => {
+          const prev = touched.get(node.id);
+          touched.set(node.id, { node, end: Math.max(end, prev ? prev.end : 0) });
+        };
+        const applied = [];
+        for (const t of params.tracks || []) {
+          const node = await requireNode(t.nodeId);
+          const field = motionField(t);
+          if (t.remove) {
+            node.removeManualKeyframeTrack(field);
+            applied.push({ nodeId: node.id, field, removed: true });
+            continue;
+          }
+          if (!Array.isArray(t.keyframes) || t.keyframes.length === 0) throw new Error(`track on ${t.nodeId} needs keyframes`);
+          const keyframes = t.keyframes.map((k) => {
+            const kf = { timelinePosition: k.time, value: motionValue(k.value) };
+            const easing = motionEasing(k.easing);
+            if (easing) kf.easing = easing;
+            return kf;
+          });
+          const track = { keyframes };
+          if (t.baseValue !== undefined) track.baseValue = motionValue(t.baseValue);
+          node.applyManualKeyframeTrack(field, track);
+          touch(node, Math.max(...t.keyframes.map((k) => k.time)));
+          applied.push({ nodeId: node.id, field, keyframes: keyframes.length });
+        }
+        for (const s of params.styles || []) {
+          const node = await requireNode(s.nodeId);
+          if (s.remove) {
+            node.removeAnimationStyle(s.remove);
+            applied.push({ nodeId: node.id, removedStyle: s.remove });
+            continue;
+          }
+          const config = {};
+          for (const key of ["type", "duration", "timelineOffset", "props"]) if (s[key] !== undefined) config[key] = s[key];
+          const appliedId = node.applyAnimationStyle(findAnimationStyle(s), config);
+          touch(node, (s.timelineOffset || 0) + (s.duration || 0));
+          applied.push({ nodeId: node.id, appliedStyleId: appliedId });
+        }
+        // Grow each touched timeline to fit its keyframes; an explicit duration wins.
+        const timelines = {};
+        for (const { node, end } of touched.values()) {
+          for (const tl of node.timelines) {
+            const target = params.duration > 0 ? params.duration : Math.max(tl.duration, end);
+            if (target > 0 && target !== tl.duration) node.setTimelineDuration(tl.id, target);
+            timelines[tl.id] = target;
+          }
+        }
+        figma.commitUndo();
+        return { type: request.type, requestId: request.requestId, data: { applied, timelines } };
+      }
+
+      case "get_animations": {
+        requireMotion();
+        const nodes = await Promise.all((request.nodeIds || []).map((id) => requireNode(id)));
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            playheadPosition: figma.motion.playheadPosition,
+            availableStyles: plain(figma.motion.figmaAnimationStyles()),
+            nodes: nodes.map(serializeMotion),
+          },
+        };
       }
 
       case "set_selection": {

@@ -262,6 +262,41 @@ Types: FRAME, RECTANGLE, ELLIPSE, LINE, TEXT, COMPONENT, SVG (pass the markup in
 		return renderResponse(resp, err)
 	})
 
+	// ── Motion (beta) ────────────────────────────────────────────────────
+
+	s.AddTool(mcp.NewTool("animate_nodes",
+		mcp.WithDescription(`Animate nodes with Figma Motion (beta API, Design mode). Keyframes live on the timeline of the node's top-level frame; times are in seconds.
+- tracks: [{nodeId, property, keyframes: [{time, value, easing?}], baseValue?}] applies or replaces a manual keyframe track.
+  property: OPACITY, TRANSLATION_X, TRANSLATION_Y, TRANSLATION_XY, SCALE_X, SCALE_Y, SCALE_XY, ROTATION, WIDTH, HEIGHT, CORNER_RADIUS, STROKE_WEIGHT, PATH_TRIM_START, PATH_TRIM_END, ... or "fills[0]", "strokes[0]", "effects[0].RADIUS"; pass a raw KeyframeField as field instead for anything else.
+  value: number, boolean, "#RRGGBB[AA]", {x, y}, or a raw {type, value} KeyframeValue. TRANSLATION_* are offsets from the node's position; OPACITY is 0..1.
+  easing (on the keyframe it leaves): EASE_IN | EASE_OUT | EASE_IN_AND_OUT | LINEAR | EASE_IN_BACK | EASE_OUT_BACK | EASE_IN_AND_OUT_BACK | GENTLE | QUICK | BOUNCY | SLOW | HOLD, a cubic bezier [x1, y1, x2, y2], or a spring {bounce 0..1} / {mass, stiffness, damping}.
+  remove: true removes the track for that property instead.
+- styles: [{nodeId, style (name) or styleId, duration?, timelineOffset?, props?}] applies a Motion animation style (list them with get_animations); {nodeId, remove: appliedStyleId} removes one.
+- duration: optional timeline length in seconds; otherwise each touched timeline grows to fit its keyframes.
+One undo step.`),
+		mcp.WithArray("tracks",
+			mcp.Description(`Keyframe tracks, e.g. [{"nodeId":"1:2","property":"OPACITY","keyframes":[{"time":0,"value":0,"easing":"EASE_OUT"},{"time":0.6,"value":1}]}]`),
+			mcp.Items(map[string]interface{}{"type": "object"}),
+		),
+		mcp.WithArray("styles",
+			mcp.Description(`Animation styles to apply, e.g. [{"nodeId":"1:2","style":"Fade in","duration":0.4,"timelineOffset":0.2}]`),
+			mcp.Items(map[string]interface{}{"type": "object"}),
+		),
+		mcp.WithNumber("duration", mcp.Description("Optional timeline duration in seconds for every touched timeline")),
+	), passParams(node, "animate_nodes"))
+
+	s.AddTool(mcp.NewTool("get_animations",
+		mcp.WithDescription("Read Figma Motion data: the playhead position, the animation styles available in the file, and for each node its timelines, applied animation styles, manual keyframe tracks and resolved animations."),
+		mcp.WithArray("nodeIds",
+			mcp.Description("Optional node IDs to inspect, colon format. Omit to list only the available animation styles."),
+			mcp.Items(map[string]interface{}{"type": "string"}),
+		),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		raw, _ := req.Params.Arguments["nodeIds"].([]interface{})
+		resp, err := node.Send(ctx, "get_animations", toStringSlice(raw), nil)
+		return renderResponse(resp, err)
+	})
+
 	// ── Large results ────────────────────────────────────────────────────
 
 	s.AddTool(mcp.NewTool("get_result_chunk",
