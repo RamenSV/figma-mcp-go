@@ -25,8 +25,9 @@ func NewFollower(leaderURL string) *Follower {
 	return &Follower{
 		leaderURL: leaderURL,
 		client: &http.Client{
-			// 35s > 30s bridge timeout — gives the leader time to time out first
-			Timeout: 35 * time.Second,
+			// The leader's bridge timeout starts at 30s but progress updates extend it,
+			// so long create_nodes calls can run for minutes. The leader times out first.
+			Timeout: 10 * time.Minute,
 		},
 	}
 }

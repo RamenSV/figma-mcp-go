@@ -98,6 +98,32 @@ Watch the video:
 | `get_screenshot` | Base64 image export of any node |
 | `save_screenshots` | Export images to disk (server-side, no API call) |
 
+### Write
+
+Run the plugin in Design mode (Dev Mode is read-only). Every write is one undo step — Cmd+Z reverts it.
+
+| Tool | Description |
+|------|-------------|
+| `create_nodes` | Create frames, rectangles, ellipses, lines, text, components — nested trees in one call |
+| `update_nodes` | Change position, size, fills, strokes, text, fonts, auto layout; move nodes between parents |
+| `delete_nodes` | Delete nodes by ID |
+| `clone_node` | Duplicate a node, optionally into a new parent |
+| `create_instance` | Instance a local or library component |
+| `set_selection` | Select nodes and scroll the viewport to them |
+
+### Motion (beta)
+
+Uses Figma's beta Motion plugin API, so it needs a Figma version with Motion and the plugin running in Design mode. Keyframes go on the timeline of the node's top-level frame; times are in seconds.
+
+| Tool | Description |
+|------|-------------|
+| `animate_nodes` | Apply keyframe tracks (opacity, translation, scale, rotation, size, fills, effects…) with easing or springs, apply or remove Motion animation styles, set timeline duration |
+| `get_animations` | Read timelines, applied styles, keyframe tracks and the animation styles available in the file |
+
+### Large results
+
+Results over 50KB are split so they fit client limits (Claude Desktop rejects results over 1MB; Claude Code saves results over ~25k tokens to a file instead of showing them). The split is lossless and follows the node tree: each chunk holds complete nodes as readable JSON, and large parents arrive first with `id` / `name` / `type` stubs for their children, which later chunks fill in. The first response includes `resultId`, `totalChunks` and `howToRead`; fetch the rest with `get_result_chunk`. Override the chunk size with `FIGMA_MCP_MAX_RESULT_BYTES`. For big pages, `depth` on `get_node` / `get_nodes_info` trims the tree before falling back to chunks.
+
 ---
 
 ## Contributing

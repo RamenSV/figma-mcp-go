@@ -5,8 +5,9 @@ import (
 	"regexp"
 )
 
-// nodeIDPattern matches Figma node IDs: colon-separated integers e.g. "4029:12345"
-var nodeIDPattern = regexp.MustCompile(`^\d+:\d+$`)
+// nodeIDPattern matches Figma node IDs: colon-separated integers e.g. "4029:12345",
+// plus instance sublayer IDs e.g. "I60:3637;59:1069".
+var nodeIDPattern = regexp.MustCompile(`^(\d+:\d+|I\d+:\d+(;\d+:\d+)+)$`)
 
 // ValidNodeID reports whether s is a valid Figma node ID.
 func ValidNodeID(s string) bool {
@@ -24,6 +25,9 @@ func ValidateRPC(tool string, nodeIDs []string, params map[string]interface{}) s
 		if !ValidNodeID(nodeIDs[0]) {
 			return fmt.Sprintf("nodeId must use colon format e.g. 4029:12345, got: %s", nodeIDs[0])
 		}
+		if msg := validateDepth(params); msg != "" {
+			return msg
+		}
 
 	case "get_nodes_info":
 		if len(nodeIDs) == 0 {
@@ -33,6 +37,9 @@ func ValidateRPC(tool string, nodeIDs []string, params map[string]interface{}) s
 			if !ValidNodeID(id) {
 				return fmt.Sprintf("invalid nodeId: %s — must use colon format e.g. 4029:12345", id)
 			}
+		}
+		if msg := validateDepth(params); msg != "" {
+			return msg
 		}
 
 	case "get_screenshot":
@@ -72,10 +79,91 @@ func ValidateRPC(tool string, nodeIDs []string, params map[string]interface{}) s
 		}
 
 	case "get_design_context":
-		if depth, ok := params["depth"].(float64); ok {
-			if depth < 0 {
-				return "depth must be a non-negative number"
+		if msg := validateDepth(params); msg != "" {
+			return msg
+		}
+
+	case "create_nodes":
+		if msg := validateOptionalNodeID(params, "parentId"); msg != "" {
+			return msg
+		}
+		if nodes, ok := params["nodes"].([]interface{}); !ok || len(nodes) == 0 {
+			return "nodes must be a non-empty array"
+		}
+
+	case "update_nodes":
+		updates, ok := params["updates"].([]interface{})
+		if !ok || len(updates) == 0 {
+			return "updates must be a non-empty array"
+		}
+		for i, u := range updates {
+			m, ok := u.(map[string]interface{})
+			if !ok {
+				return fmt.Sprintf("updates[%d] must be an object", i)
 			}
+			if id, _ := m["nodeId"].(string); !ValidNodeID(id) {
+				return fmt.Sprintf("updates[%d].nodeId must use colon format e.g. 4029:12345", i)
+			}
+			if msg := validateOptionalNodeID(m, "parentId"); msg != "" {
+				return fmt.Sprintf("updates[%d]: %s", i, msg)
+			}
+		}
+
+	case "delete_nodes", "set_selection", "clone_node":
+		if len(nodeIDs) == 0 {
+			return "nodeIds is required and must not be empty"
+		}
+		for _, id := range nodeIDs {
+			if !ValidNodeID(id) {
+				return fmt.Sprintf("invalid nodeId: %s — must use colon format e.g. 4029:12345", id)
+			}
+		}
+		if msg := validateOptionalNodeID(params, "parentId"); msg != "" {
+			return msg
+		}
+
+	case "animate_nodes":
+		tracks, _ := params["tracks"].([]interface{})
+		styles, _ := params["styles"].([]interface{})
+		if len(tracks) == 0 && len(styles) == 0 {
+			return "tracks or styles must be a non-empty array"
+		}
+		for _, list := range []struct {
+			name  string
+			items []interface{}
+		}{{"tracks", tracks}, {"styles", styles}} {
+			for i, item := range list.items {
+				m, ok := item.(map[string]interface{})
+				if !ok {
+					return fmt.Sprintf("%s[%d] must be an object", list.name, i)
+				}
+				if id, _ := m["nodeId"].(string); !ValidNodeID(id) {
+					return fmt.Sprintf("%s[%d].nodeId must use colon format e.g. 4029:12345", list.name, i)
+				}
+			}
+		}
+		if d, ok := params["duration"].(float64); ok && d <= 0 {
+			return "duration must be greater than zero"
+		}
+
+	case "get_animations":
+		for _, id := range nodeIDs {
+			if !ValidNodeID(id) {
+				return fmt.Sprintf("invalid nodeId: %s — must use colon format e.g. 4029:12345", id)
+			}
+		}
+
+	case "create_instance":
+		id, _ := params["componentId"].(string)
+		key, _ := params["componentKey"].(string)
+		if id == "" && key == "" {
+			return "componentId or componentKey is required"
+		}
+		if msg := validateOptionalNodeID(params, "componentId"); msg != "" {
+			return msg
+		}
+		if msg := validateOptionalNodeID(params, "parentId"); msg != "" {
+			return msg
 		}
 
 	case "scan_text_nodes", "scan_nodes_by_types":
@@ -103,4 +191,20 @@ func validExportFormat(f string) bool {
 		return true
 	}
 	return false
+}
+
+// validateDepth checks the optional depth param shared by tree-returning tools.
+func validateDepth(params map[string]interface{}) string {
+	if depth, ok := params["depth"].(float64); ok && depth < 0 {
+		return "depth must be a non-negative number"
+	}
+	return ""
+}
+
+// validateOptionalNodeID checks params[key] is a valid node ID when present.
+func validateOptionalNodeID(params map[string]interface{}, key string) string {
+	if id, ok := params[key].(string); ok && id != "" && !ValidNodeID(id) {
+		return fmt.Sprintf("%s must use colon format e.g. 4029:12345, got: %s", key, id)
+	}
+	return ""
 }
